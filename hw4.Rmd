@@ -1,0 +1,305 @@
+---
+title: "EPID P8451: Homework 4"
+author: "Will Simmons"
+date: "2/18/2020"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+# Part 1
+### Problem 1.0
+*Setup, Import, Clean*
+
+I'll set up my session with necessary libraries:
+```{r setup, message=FALSE, warning=FALSE}
+library(tidyverse)
+library(readr)
+library(Amelia)
+library(caret)
+library(modelr)
+```
+
+Then I'll perform some needed data cleaning, especially on the variables that need changes in format (e.g. many are categorical variables that need to be formatted as `factor` variables, not `numeric`).
+```{r clean_data, warning=FALSE}
+data = 
+  read_csv('./data/class4_p1.csv',
+           col_types = cols(
+             habits7 = col_factor()    ## error with habits7 - forced to read as factor
+           )
+  ) %>% 
+  rename(id = X1) %>% 
+  mutate(id = as.character(id)) %>%    ## making id character just so isnʻt accidentally analyzed
+  mutate_at(
+    vars(matches('[0-9]$|group')),
+    as.factor
+  )
+  
+sapply(data, class)  ## checking class of all columns - looks good with codebook
+```
+
+Next, I'll check for missing data.
+```{r missing_data, warning=FALSE}
+missmap(data)    ## looks like habits7 has missing data, confirmed by codebook - only asked in certain rounds
+colSums(is.na(data))   ## also 88 missing for our outcome, healthydays - we'll need to remove those since it's our label
+```
+
+Looks like we have a fair amount of missing data, especially for the variable `habits7`. Instead of dropping everyone with a missing value (thus dropping a large chunk of the sample that doesn't have a value for `habits7`), I'll drop the variable first, then exclude the remaining observations that have missing values.
+
+As my last setup step, I'll partition my data into training and testing sets.
+```{r train_test}
+## remove missing outcome values
+data =
+  data %>% 
+  select(-habits7) %>% 
+  drop_na()
+
+set.seed(1)
+
+train_index = 
+  createDataPartition(data$healthydays,
+                      p = 0.7,
+                      list = FALSE)    
+
+train_df =
+  data[train_index,]     ## applying train index to data to get actual training rows
+
+test_df =                ## applying anti-index to data to get test rows 
+  data[-train_index,]
+
+```
+
+### Problem 1.1
+*Fit two prediction  models using  different subsets of the features in the training data. Features can overlap in the two models, but the feature sets should not be exactly the same across models.*
+
+First, I'll fit two models with different predictors.
+```{r models}
+## test model 1
+model_1 =
+  train_df %>% 
+  lm(data = .,
+     healthydays ~ chronic3 + chronic4 + bmi + habits5 + agegroup)
+
+## test model 2
+model_2 = 
+  train_df %>% 
+  lm(data = .,
+     healthydays ~ tobacco1 + alcohol1 + gpaq11days + dem4 + povertygroup)
+
+```
+
+### Problem 1.2
+*Apply both models within the test data and determine which model is the preferred prediction model using the appropriate evaluation metric(s). HINT: Note you are using linear regression, not logistic regression like we used in class.*
+
+Then, I'll fit the models to the test data to evaluate prediction on non-training data. 
+
+In order to calculate the mean squared error (MSE), one of the prediction evaluation metrics we can use for regression models, I'll need to subtract the values observed in our test data from those predicted in our test data by our models. I'll do this for each model to assess separate MSE scores for Model 1 and Model 2, my two regression models.
+```{r predict}
+fit_1 =                          ## returns predicted values based on model_1
+  predict(
+    model_1,
+    test_df,
+    type = 'response'
+  )
+
+diff_1 =
+  test_df$healthydays - fit_1    ## difference between observed from test and predicted from model_1 - prediction evaluation
+
+fit_2 =                          ## returns predicted values based on model_2
+  predict(
+    model_2,
+    test_df,
+    type = 'response'
+  )
+
+diff_2 =
+  test_df$healthydays - fit_2    ## difference between observed from test and predicted from model_1
+```
+
+Finally, to calculate and compare MSE values for my two linear models, I calculate the mean of the squared differences between observed and predicted for each model.
+
+We can also use the package `modelr` to calculate MSE directly.
+```{r mse}
+## calculate MSEs for two models
+mse_1 = mean((diff_1)^2)
+mse_2 = mean((diff_2)^2)
+
+## can also use package modelr to calculate directly
+mse(model_1, test_df)
+# MSE1 = 48.36328
+mse(model_2, test_df)
+# MSE2 = 53.28268
+```
+
+From these calculations, we can see that Model 1 had a lower MSE and was thus more accurate in its prediction than Model 2. 
+
+  * Model 1 MSE = `r mse_1`
+  * Model 2 MSE = `r mse_2`
+  
+### Problem 1.3
+*Describe one setting (in 1-2 sentences) where the implementation of your final model would be useful.*
+
+Predictive models similar to my final model - which includes predictors diabetes, asthma, BMI, physical activity, and age - could help predict healthcare needs in different communities.
+
+# Part 2
+
+### Problem 2.0 
+*Load Data*
+
+First, I'll load the data from R's built-in dataset.
+```{r import2}
+data(USArrests)
+```
+
+Is there any missing data?
+```{r missing2}
+colSums(is.na(USArrests))
+```
+No missing data, so we're good to go.
+
+Let's check if we need to scale our variables by looking at their means and SDs.
+```{r scaling}
+mean_vals =  
+  map(USArrests, ~mean(.)) %>% 
+  unlist() %>% 
+  tibble() %>% 
+  janitor::clean_names() %>% 
+  select(Mean = x)
+
+sd_vals =
+  map(USArrests, ~sd(.)) %>% 
+  unlist() %>% 
+  tibble() %>% 
+  janitor::clean_names() %>% 
+  select(SD = x)
+  
+  bind_cols(
+    mean_vals,
+    sd_vals) %>% 
+  mutate(
+    Variable = as.list(tbl_vars(USArrests))
+  ) %>%
+  select(Variable, everything()) %>% 
+  knitr::kable()
+
+```
+
+Since the means and SDs are on different scales, we need to scale our variables in order to cluster them.
+
+```{r scale}
+arrests_scaled =
+  map(USArrests, ~scale(.)) %>% 
+  bind_cols()
+## successfully scaled
+
+## checking values in same table style as above
+mean_vals =  
+  map(arrests_scaled, ~mean(.)) %>% 
+  unlist() %>% 
+  tibble() %>% 
+  janitor::clean_names() %>% 
+  select(Mean = x)
+
+sd_vals =
+  map(arrests_scaled, ~sd(.)) %>% 
+  unlist() %>% 
+  tibble() %>% 
+  janitor::clean_names() %>% 
+  select(SD = x)
+  
+  bind_cols(
+    mean_vals,
+    sd_vals) %>% 
+  mutate(
+    Variable = as.list(tbl_vars(arrests_scaled))
+  ) %>%
+  select(Variable, everything()) %>% 
+  knitr::kable()
+
+```
+
+As we can see, all of our variables now have mean 0 and SD 1.
+
+### Problem 2.1
+*Using the dataset from the Group assignment Part IIb (USArrests), identify clusters using hierarchical analysis. Vary the choice for agglomeration method.*
+
+Now, I'll start clustering. I'll use three methods of agglomeration: complete, average, and single.
+```{r cluster}
+
+set.seed(1)
+
+# Create Dissimilarity matrix
+d_matrix = dist(arrests_scaled, method = "euclidean")
+
+# Hierarchical clustering using Complete Linkage
+hc_c = hclust(d_matrix, method = "complete" )
+
+# Average Linkage
+hc_a = hclust(d_matrix, method = "average" )
+
+# Single Linkage
+hc_s = hclust(d_matrix, method = "single" )
+```
+
+Now I'll plot the resulting dendrograms for the three agglomeration methods.
+
+```{r plot_cluster, fig.width = 12}
+# Plot the obtained dendrogram
+
+library(ggdendro)     ## use to visualize dendrograms w/ ggplot2
+library(patchwork)    ## use to plot panel graphs using +
+
+c =
+  ggdendrogram(hc_c) +
+  labs(title = "Complete") +
+  theme(plot.title = element_text(hjust = 0.5))
+
+a =
+  ggdendrogram(hc_a) +
+  labs(title = "Average") +
+  theme(plot.title = element_text(hjust = 0.5))
+
+s =
+  ggdendrogram(hc_s) +
+  labs(title = "Single") +
+  theme(plot.title = element_text(hjust = 0.5))
+
+# patchwork
+c + a + s
+```
+
+### Problem 2.2
+*For each method:*
+
+  * *Determine the optimal number of clusters using a clear, data-driven strategy.*
+  * *Describe the composition of each cluster in terms of the original input features*
+  
+##### Problem 2.2.a: Complete Agglomeration
+First, we'll complete the above steps for the complete-agglomerated hierarchical cluster analysis.
+
+```{r gap_c, fig.width = 9}
+set.seed(1)
+library(cluster)
+library(factoextra)
+## *** does gap statistic change based on linkage function (complete, avg, single)? If so, how to edit the code below?
+gap_c =
+  clusGap(arrests_scaled, 
+          FUN = hcut, 
+          nstart = 25, 
+          K.max = 10, 
+          B = 50)
+
+fviz_gap_stat(gap_c)
+```
+
+
+##### Problem 2.2.b: Average Agglomeration
+
+##### Problem 2.2.c: Single Agglomeration
+
+```{r gap_stat}
+# gap_stat <- clusGap(copd.data.nomiss, FUN = hcut, nstart = 25, K.max = 10, B = 50)
+# fviz_gap_stat(gap_stat)
+
+```
+
